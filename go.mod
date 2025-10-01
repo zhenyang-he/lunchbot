@@ -1,4 +1,4 @@
-module getting-started-bot
+module lunchbot
 
 go 1.20
 
