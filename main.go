@@ -51,9 +51,9 @@ func main() {
 		case "new_mentioned_message_received_from_group_chat":
 			handleMessageCommand(ctx, reqSOP, false) // false = group message
 			ctx.JSON(http.StatusOK, "Success")
-		default:
-			log.Printf("ERROR: event %s not handled yet!", reqSOP.EventType)
-			ctx.JSON(http.StatusOK, "Success")
+		// default:
+		// 	log.Printf("ERROR: event %s not handled yet!", reqSOP.EventType)
+		// 	ctx.JSON(http.StatusOK, "Success")
 		}
 	})
 
