@@ -24,9 +24,8 @@ func main() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT)
 	r := gin.Default()
-	r.Use(WithSOPSignatureValidation())
 
-	// Health check endpoint for uptime monitoring
+	// Health check endpoint for uptime monitoring (no signature validation needed)
 	r.GET("/health", func(ctx *gin.Context) {
 		ctx.JSON(http.StatusOK, gin.H{
 			"status": "healthy",
@@ -35,7 +34,11 @@ func main() {
 		})
 	})
 
-	r.POST("/callback", func(ctx *gin.Context) {
+	// Apply signature validation only to SeaTalk webhook endpoints
+	protected := r.Group("/")
+	protected.Use(WithSOPSignatureValidation())
+
+	protected.POST("/callback", func(ctx *gin.Context) {
 		var reqSOP SOPEventCallbackReq
 		if err := ctx.BindJSON(&reqSOP); err != nil {
 			ctx.JSON(http.StatusInternalServerError, "something wrong")
