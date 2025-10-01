@@ -26,6 +26,15 @@ func main() {
 	r := gin.Default()
 	r.Use(WithSOPSignatureValidation())
 
+	// Health check endpoint for uptime monitoring
+	r.GET("/health", func(ctx *gin.Context) {
+		ctx.JSON(http.StatusOK, gin.H{
+			"status": "healthy",
+			"bot":    "lunchbot",
+			"time":   time.Now().Format("2006-01-02 15:04:05"),
+		})
+	})
+
 	r.POST("/callback", func(ctx *gin.Context) {
 		var reqSOP SOPEventCallbackReq
 		if err := ctx.BindJSON(&reqSOP); err != nil {
@@ -51,9 +60,9 @@ func main() {
 		case "new_mentioned_message_received_from_group_chat":
 			handleMessageCommand(ctx, reqSOP, false) // false = group message
 			ctx.JSON(http.StatusOK, "Success")
-		// default:
-		// 	log.Printf("ERROR: event %s not handled yet!", reqSOP.EventType)
-		// 	ctx.JSON(http.StatusOK, "Success")
+			// default:
+			// 	log.Printf("ERROR: event %s not handled yet!", reqSOP.EventType)
+			// 	ctx.JSON(http.StatusOK, "Success")
 		}
 	})
 
