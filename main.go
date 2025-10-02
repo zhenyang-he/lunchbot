@@ -71,7 +71,7 @@ func main() {
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "9091" // Use port 9001 - commonly available
+		port = "8080" // Railway prefers 8080
 	}
 
 	srv := &http.Server{
