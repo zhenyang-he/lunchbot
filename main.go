@@ -27,6 +27,10 @@ func main() {
 
 	// Health check endpoint for uptime monitoring (no signature validation needed)
 	r.GET("/health", func(ctx *gin.Context) {
+		// Log the request for debugging
+		log.Printf("Health check request from: %s, User-Agent: %s, Path: %s",
+			ctx.ClientIP(), ctx.GetHeader("User-Agent"), ctx.Request.URL.Path)
+
 		ctx.JSON(http.StatusOK, gin.H{
 			"status": "healthy",
 			"bot":    "lunchbot",
@@ -67,6 +71,17 @@ func main() {
 			// 	log.Printf("ERROR: event %s not handled yet!", reqSOP.EventType)
 			// 	ctx.JSON(http.StatusOK, "Success")
 		}
+	})
+
+	// Catch-all handler to debug what UptimeRobot is requesting
+	r.NoRoute(func(ctx *gin.Context) {
+		log.Printf("404 Request: %s %s from %s, User-Agent: %s",
+			ctx.Request.Method, ctx.Request.URL.Path, ctx.ClientIP(), ctx.GetHeader("User-Agent"))
+		ctx.JSON(http.StatusNotFound, gin.H{
+			"error":  "Not Found",
+			"path":   ctx.Request.URL.Path,
+			"method": ctx.Request.Method,
+		})
 	})
 
 	port := os.Getenv("PORT")
