@@ -26,17 +26,17 @@ func main() {
 	r := gin.Default()
 
 	// Health check endpoint for uptime monitoring (no signature validation needed)
-	r.GET("/health", func(ctx *gin.Context) {
-		// Log the request for debugging
-		log.Printf("Health check request from: %s, User-Agent: %s, Path: %s",
-			ctx.ClientIP(), ctx.GetHeader("User-Agent"), ctx.Request.URL.Path)
-
+	healthHandler := func(ctx *gin.Context) {
 		ctx.JSON(http.StatusOK, gin.H{
 			"status": "healthy",
 			"bot":    "lunchbot",
 			"time":   time.Now().Format("2006-01-02 15:04:05"),
 		})
-	})
+	}
+
+	// Support both GET and HEAD requests for health checks
+	r.GET("/health", healthHandler)
+	r.HEAD("/health", healthHandler)
 
 	// Apply signature validation only to SeaTalk webhook endpoints
 	protected := r.Group("/")
@@ -274,6 +274,8 @@ var (
 	appAccessToken      AppAccessToken
 	dailyLunchResponses = make(map[string][]LunchParticipant) // date -> []participants
 	lunchMutex          sync.RWMutex
+	lastInviteDate      string // Track when we last sent an invite
+	inviteMutex         sync.Mutex
 
 	// Multiple group support
 	lunchGroupIDs = []string{
@@ -450,6 +452,16 @@ func startLunchScheduler() {
 }
 
 func sendLunchInvite() error {
+	// Prevent duplicate invites on the same day
+	inviteMutex.Lock()
+	defer inviteMutex.Unlock()
+
+	today := time.Now().In(getTimezone()).Format("2006-01-02")
+	if lastInviteDate == today {
+		log.Printf("INFO: Lunch invite already sent today (%s), skipping", today)
+		return nil
+	}
+
 	messageID := fmt.Sprintf("lunch_%d", time.Now().Unix())
 
 	// Send to all configured groups
@@ -461,7 +473,19 @@ func sendLunchInvite() error {
 		log.Printf("INFO: Lunch invite sent successfully to group %s", groupID)
 	}
 
+	// Mark that we've sent the invite today
+	lastInviteDate = today
+	log.Printf("INFO: Marked lunch invite as sent for date: %s", today)
+
 	return nil
+}
+
+func getTimezone() *time.Location {
+	location, err := time.LoadLocation("Asia/Singapore")
+	if err != nil {
+		return time.UTC
+	}
+	return location
 }
 
 func sendLunchInviteToGroup(groupID, messageID string) error {
