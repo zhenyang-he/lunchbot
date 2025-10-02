@@ -401,18 +401,25 @@ func SendMessageToGroup(ctx context.Context, message, groupID string) error {
 func startLunchScheduler() {
 	log.Println("INFO: Starting lunch invite scheduler")
 
-	for {
-		now := time.Now()
+	// Set timezone to GMT+8 (Singapore/Asia)
+	location, err := time.LoadLocation("Asia/Singapore")
+	if err != nil {
+		log.Printf("ERROR: Failed to load timezone, using UTC: %v", err)
+		location = time.UTC
+	}
 
-		// Calculate next 11:30 AM
-		next1130 := time.Date(now.Year(), now.Month(), now.Day(), 11, 30, 0, 0, now.Location())
+	for {
+		now := time.Now().In(location)
+
+		// Calculate next 11:30 AM in GMT+8
+		next1130 := time.Date(now.Year(), now.Month(), now.Day(), 11, 30, 0, 0, location)
 		if now.After(next1130) {
 			// If it's already past 11:30 today, schedule for tomorrow
 			next1130 = next1130.Add(24 * time.Hour)
 		}
 
 		duration := next1130.Sub(now)
-		log.Printf("INFO: Next lunch invite scheduled for %s (in %v)", next1130.Format("2006-01-02 15:04:05"), duration)
+		log.Printf("INFO: Next lunch invite scheduled for %s GMT+8 (in %v)", next1130.Format("2006-01-02 15:04:05"), duration)
 
 		// Wait until 11:30 AM
 		time.Sleep(duration)
