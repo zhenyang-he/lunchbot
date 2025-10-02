@@ -71,7 +71,7 @@ func main() {
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "9090" // Use port 9090 to avoid conflicts
+		port = "9091" // Use port 9001 - commonly available
 	}
 
 	srv := &http.Server{
