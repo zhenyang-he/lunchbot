@@ -53,12 +53,7 @@ func main() {
 		switch reqSOP.EventType {
 		case "event_verification":
 			ctx.JSON(http.StatusOK, SOPEventVerificationResp{SeatalkChallenge: reqSOP.Event.SeatalkChallenge})
-		case "interactive_message_button_clicked":
-			log.Printf("INFO: Using interactive_message_button_clicked event")
-			handleButtonClick(ctx, reqSOP)
-			ctx.JSON(http.StatusOK, "Success")
 		case "interactive_message_click":
-			log.Printf("INFO: Using interactive_message_click event")
 			handleButtonClick(ctx, reqSOP)
 			ctx.JSON(http.StatusOK, "Success")
 		case "message_from_bot_subscriber":
@@ -67,21 +62,10 @@ func main() {
 		case "new_mentioned_message_received_from_group_chat":
 			handleMessageCommand(ctx, reqSOP, false) // false = group message
 			ctx.JSON(http.StatusOK, "Success")
-			// default:
-			// 	log.Printf("ERROR: event %s not handled yet!", reqSOP.EventType)
-			// 	ctx.JSON(http.StatusOK, "Success")
+		default:
+			log.Printf("event %s not handled yet!", reqSOP.EventType)
+			ctx.JSON(http.StatusOK, "Success")
 		}
-	})
-
-	// Catch-all handler to debug what UptimeRobot is requesting
-	r.NoRoute(func(ctx *gin.Context) {
-		log.Printf("404 Request: %s %s from %s, User-Agent: %s",
-			ctx.Request.Method, ctx.Request.URL.Path, ctx.ClientIP(), ctx.GetHeader("User-Agent"))
-		ctx.JSON(http.StatusNotFound, gin.H{
-			"error":  "Not Found",
-			"path":   ctx.Request.URL.Path,
-			"method": ctx.Request.Method,
-		})
 	})
 
 	port := os.Getenv("PORT")
@@ -602,11 +586,7 @@ func handleMessageCommand(ctx *gin.Context, reqSOP SOPEventCallbackReq, isPrivat
 }
 
 func handleButtonClick(ctx *gin.Context, reqSOP SOPEventCallbackReq) {
-	employeeCode := reqSOP.Event.EmployeeCode
 	groupID := reqSOP.Event.GroupID
-
-	log.Printf("INFO: Button clicked by employee: %s in group: %s", employeeCode, groupID)
-
 	// Process lunch acceptance using daily tracking
 	handleDailyLunchAcceptWithEvent(ctx, reqSOP.Event, groupID)
 }
