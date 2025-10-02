@@ -472,11 +472,38 @@ func getTimezone() *time.Location {
 	return location
 }
 
+func getTodayLunchStatus() string {
+	lunchMutex.RLock()
+	defer lunchMutex.RUnlock()
+
+	today := time.Now().In(getTimezone()).Format("2006-01-02")
+	participants, exists := dailyLunchResponses[today]
+
+	if !exists || len(participants) == 0 {
+		return fmt.Sprintf("📊 **Today's Status (%s):**\n\n👥 Total people: 0\n❌ No one has accepted lunch yet today", today)
+	}
+
+	// Format participant names
+	var namesList []string
+	for _, participant := range participants {
+		namesList = append(namesList, fmt.Sprintf("• %s", participant.DisplayName))
+	}
+
+	statusMsg := fmt.Sprintf("📊 **Today's Status (%s):**\n\n👥 Total people: %d\n✅ Accepted by:\n%s",
+		today,
+		len(participants),
+		strings.Join(namesList, "\n"))
+
+	return statusMsg
+}
+
 func sendLunchInviteToGroup(groupID, messageID string) error {
 	return sendInteractiveLunchInvite(groupID, messageID)
 }
 
 func sendInteractiveLunchInvite(groupID, messageID string) error {
+	today := time.Now().In(getTimezone()).Format("Monday, 2 January 2006")
+
 	bodyJson, _ := json.Marshal(SOPSendMessageToGroup{
 		GroupID: groupID,
 		Message: SOPMessage{
@@ -486,21 +513,21 @@ func sendInteractiveLunchInvite(groupID, messageID string) error {
 					{
 						ElementType: "title",
 						Title: &SOPInteractiveTitle{
-							Text: "🍽️ Lunch Invite!",
+							Text: fmt.Sprintf("🍽️ Lunch Invite for %s!", today),
 						},
 					},
 					{
 						ElementType: "description",
 						Description: &SOPInteractiveDescription{
 							Format: 1,
-							Text:   "Who's interested in lunch today? Click Accept if you're joining!",
+							Text:   "Who's interested in lunch today? Click if you're joining!",
 						},
 					},
 					{
 						ElementType: "button",
 						Button: &SOPInteractiveButton{
 							ButtonType:   "callback",
-							Text:         "Accept 🍽️",
+							Text:         "Accept/Decline 🍽️",
 							Value:        "lunch_accept_" + messageID,
 							CallbackData: "lunch_accept_" + messageID,
 							ActionID:     "lunch_accept_" + messageID,
@@ -560,21 +587,35 @@ func handleMessageCommand(ctx *gin.Context, reqSOP SOPEventCallbackReq, isPrivat
 **How to use:**
 • Type "help" to show this message
 • Type "jio" (private or @mention) to trigger lunch invite
-• Click "Accept 🍽️" button on lunch invites to join
+• Type "status" (private or @mention) to see today's lunch invite status
+• Click "Accept/Decline 🍽️" button to join lunch
+• Click "Accept/Decline 🍽️" button again to decline (if already joined)
 
 **Features:**
 • Daily automatic lunch invites at 11:30 AM
 • Shows participant names and count
-• Prevents duplicate acceptances per day`
+• Toggle accept/decline with same button`
 
 		if err := sendResponse(helpMsg); err != nil {
 			log.Printf("ERROR: Failed to send help message: %v", err)
+		}
+	} else if strings.Contains(strings.ToLower(message), "status") {
+		statusMsg := getTodayLunchStatus()
+		if err := sendResponse(statusMsg); err != nil {
+			log.Printf("ERROR: Failed to send status message: %v", err)
 		}
 	} else if strings.Contains(strings.ToLower(message), "jio") {
 		if err := sendLunchInvite(); err != nil {
 			log.Printf("ERROR: Failed to send lunch invite: %v", err)
 			if err := sendResponse("❌ Failed to send lunch invite to groups"); err != nil {
 				log.Printf("ERROR: Failed to send error message: %v", err)
+			}
+		} else {
+			// Send confirmation only for private messages
+			if isPrivate {
+				if err := sendResponse("✅ Lunch invite sent successfully to 1 group(s)!"); err != nil {
+					log.Printf("ERROR: Failed to send confirmation message: %v", err)
+				}
 			}
 		}
 	} else {
@@ -587,8 +628,31 @@ func handleMessageCommand(ctx *gin.Context, reqSOP SOPEventCallbackReq, isPrivat
 
 func handleButtonClick(ctx *gin.Context, reqSOP SOPEventCallbackReq) {
 	groupID := reqSOP.Event.GroupID
-	// Process lunch acceptance using daily tracking
-	handleDailyLunchAcceptWithEvent(ctx, reqSOP.Event, groupID)
+	employeeCode := reqSOP.Event.EmployeeCode
+
+	// Check if user has already accepted today
+	lunchMutex.RLock()
+	today := time.Now().Format("2006-01-02")
+	_, exists := dailyLunchResponses[today]
+	hasAccepted := false
+
+	if exists {
+		for _, participant := range dailyLunchResponses[today] {
+			if participant.EmployeeCode == employeeCode {
+				hasAccepted = true
+				break
+			}
+		}
+	}
+	lunchMutex.RUnlock()
+
+	if hasAccepted {
+		// User has already accepted, so decline them
+		handleDailyLunchDeclineWithEvent(ctx, reqSOP.Event, groupID)
+	} else {
+		// User hasn't accepted yet, so accept them
+		handleDailyLunchAcceptWithEvent(ctx, reqSOP.Event, groupID)
+	}
 }
 
 // Cache for employee names to avoid repeated API calls
@@ -761,6 +825,73 @@ func handleDailyLunchAcceptWithEvent(ctx *gin.Context, event Event, groupID stri
 
 	if err := SendMessageToGroup(ctx, confirmMsg, groupID); err != nil {
 		log.Printf("ERROR: Failed to send lunch confirmation: %v", err)
+	}
+}
+
+func handleDailyLunchDeclineWithEvent(ctx *gin.Context, event Event, groupID string) {
+	lunchMutex.Lock()
+	defer lunchMutex.Unlock()
+
+	employeeCode := event.EmployeeCode
+	displayName := getEmployeeDisplayName(event)
+
+	// Use today's date as the key for daily tracking
+	today := time.Now().Format("2006-01-02")
+
+	// Initialize today's responses if it doesn't exist
+	if _, exists := dailyLunchResponses[today]; !exists {
+		dailyLunchResponses[today] = []LunchParticipant{}
+		return
+	}
+
+	// Find and remove the employee from today's responses
+	originalCount := len(dailyLunchResponses[today])
+	var updatedParticipants []LunchParticipant
+	found := false
+
+	for _, participant := range dailyLunchResponses[today] {
+		if participant.EmployeeCode != employeeCode {
+			updatedParticipants = append(updatedParticipants, participant)
+		} else {
+			found = true
+		}
+	}
+
+	if !found {
+		log.Printf("INFO: Employee %s (%s) tried to decline lunch but was not in the accepted list for today (%s) - ignoring", employeeCode, displayName, today)
+		// Silently ignore if they weren't in the list
+		return
+	}
+
+	// Update the responses
+	dailyLunchResponses[today] = updatedParticipants
+	newCount := len(dailyLunchResponses[today])
+
+	log.Printf("INFO: Employee %s (%s) declined today's lunch (%s). Total acceptances: %d (was %d)", employeeCode, displayName, today, newCount, originalCount)
+
+	// Send decline confirmation message
+	var declineMsg string
+	if newCount == 0 {
+		declineMsg = fmt.Sprintf(`😔 **%s declined today's lunch**
+
+📊 **Today's Status (%s):**
+👥 Total people: **0**
+❌ No one has accepted lunch yet today
+
+Maybe next time! 🍽️`, displayName, today)
+	} else {
+		declineMsg = fmt.Sprintf(`😔 **%s declined today's lunch**
+
+📊 **Today's Status (%s):**
+👥 Total people: **%d**
+✅ Accepted by:
+%s
+
+%s`, displayName, today, newCount, formatParticipantNames(dailyLunchResponses[today]), getLunchStatusEmoji(newCount))
+	}
+
+	if err := SendMessageToGroup(ctx, declineMsg, groupID); err != nil {
+		log.Printf("ERROR: Failed to send lunch decline message: %v", err)
 	}
 }
 
