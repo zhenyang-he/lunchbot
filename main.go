@@ -89,6 +89,9 @@ func main() {
 	// Start lunch invite scheduler
 	go startLunchScheduler()
 
+	// Start BFT reminder scheduler
+	go startBFTScheduler()
+
 	<-c
 	log.Println("terminate service")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -266,6 +269,9 @@ var (
 		"ODM2NjA0MzI4OTIy", // Main lunch group
 		// "ANOTHER_GROUP_ID",     // Add more groups here
 	}
+
+	// BFT reminder group (you can set this to same group or different group)
+	bftGroupID = "MDkwNjg0MDMzMzAw" // BFT reminder group - change this if needed
 )
 
 func GetAppAccessToken() AppAccessToken {
@@ -419,15 +425,24 @@ func startLunchScheduler() {
 			next1130 = next1130.Add(24 * time.Hour)
 		}
 
+		// Skip weekends - find next weekday
+		for next1130.Weekday() == time.Saturday || next1130.Weekday() == time.Sunday {
+			next1130 = next1130.Add(24 * time.Hour)
+		}
+
 		duration := next1130.Sub(now)
 		log.Printf("INFO: Next lunch invite scheduled for %s GMT+8 (in %v)", next1130.Format("2006-01-02 15:04:05"), duration)
 
-		// Wait until 11:30 AM
+		// Wait until 11:30 AM on a weekday
 		time.Sleep(duration)
 
-		// Send lunch invite
-		if err := sendLunchInvite(); err != nil {
-			log.Printf("ERROR: Failed to send lunch invite: %v", err)
+		// Double-check it's a weekday before sending (safety check)
+		currentTime := time.Now().In(location)
+		if currentTime.Weekday() != time.Saturday && currentTime.Weekday() != time.Sunday {
+			// Send lunch invite
+			if err := sendLunchInvite(); err != nil {
+				log.Printf("ERROR: Failed to send lunch invite: %v", err)
+			}
 		}
 
 		// Sleep for a minute to avoid sending multiple invites
@@ -585,16 +600,15 @@ func handleMessageCommand(ctx *gin.Context, reqSOP SOPEventCallbackReq, isPrivat
 		helpMsg := `🍽️ **Lunch Bot Commands**
 
 **How to use:**
-• Type "help" to show this message
-• Type "jio" (private or @mention) to trigger lunch invite
-• Type "status" (private or @mention) to see today's lunch invite status
+• Type "jio" to trigger lunch invite
+• Type "status" to see today's lunch invite status
+• Type "bft" to trigger BFT reminder
 • Click "Accept/Decline 🍽️" button to join lunch
 • Click "Accept/Decline 🍽️" button again to decline (if already joined)
 
 **Features:**
-• Daily automatic lunch invites at 11:30 AM
-• Shows participant names and count
-• Toggle accept/decline with same button`
+• Daily automatic lunch invites at 11:30 AM (weekdays only)
+• Daily automatic BFT reminders at 12:00 PM (weekdays only)`
 
 		if err := sendResponse(helpMsg); err != nil {
 			log.Printf("ERROR: Failed to send help message: %v", err)
@@ -603,6 +617,20 @@ func handleMessageCommand(ctx *gin.Context, reqSOP SOPEventCallbackReq, isPrivat
 		statusMsg := getTodayLunchStatus()
 		if err := sendResponse(statusMsg); err != nil {
 			log.Printf("ERROR: Failed to send status message: %v", err)
+		}
+	} else if strings.Contains(strings.ToLower(message), "bft") {
+		if err := sendBFTReminder(); err != nil {
+			log.Printf("ERROR: Failed to send BFT reminder: %v", err)
+			if err := sendResponse("❌ Failed to send BFT reminder to group"); err != nil {
+				log.Printf("ERROR: Failed to send error message: %v", err)
+			}
+		} else {
+			// Send confirmation only for private messages
+			if isPrivate {
+				if err := sendResponse("💪 BFT reminder sent successfully to group!"); err != nil {
+					log.Printf("ERROR: Failed to send confirmation message: %v", err)
+				}
+			}
 		}
 	} else if strings.Contains(strings.ToLower(message), "jio") {
 		if err := sendLunchInvite(); err != nil {
@@ -895,6 +923,78 @@ Maybe next time! 🍽️`, displayName, today)
 	}
 }
 
+// BFT reminder scheduler - runs daily at 12:00 PM on weekdays
+func startBFTScheduler() {
+	log.Println("INFO: Starting BFT reminder scheduler")
+
+	// Set timezone to GMT+8 (Singapore/Asia)
+	location, err := time.LoadLocation("Asia/Singapore")
+	if err != nil {
+		log.Printf("ERROR: Failed to load timezone, using UTC: %v", err)
+		location = time.UTC
+	}
+
+	for {
+		now := time.Now().In(location)
+
+		// Calculate next 12:00 PM in GMT+8
+		next1200 := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, location)
+		if now.After(next1200) {
+			// If it's already past 12:00 today, schedule for tomorrow
+			next1200 = next1200.Add(24 * time.Hour)
+		}
+
+		// Skip weekends - find next weekday
+		for next1200.Weekday() == time.Saturday || next1200.Weekday() == time.Sunday {
+			next1200 = next1200.Add(24 * time.Hour)
+		}
+
+		duration := next1200.Sub(now)
+		log.Printf("INFO: Next BFT reminder scheduled for %s GMT+8 (in %v)", next1200.Format("2006-01-02 15:04:05"), duration)
+
+		// Wait until 12:00 PM on a weekday
+		time.Sleep(duration)
+
+		// Double-check it's a weekday before sending (safety check)
+		currentTime := time.Now().In(location)
+		if currentTime.Weekday() != time.Saturday && currentTime.Weekday() != time.Sunday {
+			// Send BFT reminder
+			if err := sendBFTReminder(); err != nil {
+				log.Printf("ERROR: Failed to send BFT reminder: %v", err)
+			}
+		}
+
+		// Sleep for a minute to avoid sending multiple reminders
+		time.Sleep(time.Minute)
+	}
+}
+
+func sendBFTReminder() error {
+	today := time.Now().In(getTimezone()).Format("Monday, 2 January 2006")
+
+	message := fmt.Sprintf(`💪 **BFT Session Reminder - %s**
+
+🏃‍♂️ **Body Fit Training session is coming up!**
+
+📋 **Please prepare:**
+• Wear appropriate workout clothes
+• Bring water bottle
+• Bring bft³
+• Bring shower stuff and change of clothes
+• Be ready to move and sweat! 💦
+
+⏰ **Time to get fit and healthy!**
+
+Let's do this together! 🔥`, today)
+
+	if err := SendMessageToGroup(context.Background(), message, bftGroupID); err != nil {
+		return fmt.Errorf("failed to send BFT reminder to group %s: %v", bftGroupID, err)
+	}
+
+	log.Printf("INFO: BFT reminder sent successfully to group %s", bftGroupID)
+	return nil
+}
+
 func formatParticipantNames(participants []LunchParticipant) string {
 	if len(participants) == 0 {
 		return "_No one yet_"
@@ -916,7 +1016,7 @@ func getLunchStatusEmoji(count int) string {
 	case count >= 2 && count <= 4:
 		return "🍽️ _Nice lah, got more people join me le! Let's decide a place to eat!_"
 	case count >= 5 && count <= 8:
-		return "🍽️ Shiok! This is going to be a fun lunch! Confirm got place le hor?_"
+		return "🍽️ _Shiok! This is going to be a fun lunch! Confirm got place le hor?_"
 	case count > 8:
 		return "🍽️ _Waseh! This is going to be a big lunch party! Let's eat something scrumptious!_"
 	default:
