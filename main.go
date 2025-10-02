@@ -71,7 +71,7 @@ func main() {
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		port = "8081"  // Use different port to avoid Jenkins conflict
 	}
 
 	srv := &http.Server{
