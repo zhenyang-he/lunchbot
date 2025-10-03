@@ -1187,15 +1187,21 @@ func getRandomCheerMessage(eventType, action, displayName string, isSecondButton
 				"🍱 **%s%s battery low, need food!** Let's discover something sedap! ✨",
 			}
 		case "decline":
-			responses = []string{
-				"😔 **%s%s cannot make it today.** Next time jio you again! 🍽️",
-				"🏠 **%s%s staying in office today.** We miss you at lunch leh! 💤",
-				"📚 **%s%s got other commitments.** Catch you for next makan session! 👋",
-				"☕ **%s%s going solo today.** Also can lah! ☕",
-				"💼 **%s%s too busy with work.** Don't forget to eat ah! 🛋️",
-				"🥪 **%s%s got other food plans.** Hope it's sedap! 😊",
-				"📱 **%s%s got different arrangement.** See you next time! 🤗",
-				"🍕 **%s%s going for something else.** Enjoy your makan! 😄",
+			if displayName == "Zhenyang He" {
+				responses = []string{
+					"💪 **%s%s will be chionging BFT today yet again, paiseh nakamatachi!** 🏃‍♂️💦",
+				}
+			} else {
+				responses = []string{
+					"😔 **%s%s cannot make it today.** Next time jio you again! 🍽️",
+					"🏠 **%s%s staying in office today.** We miss you at lunch leh! 💤",
+					"📚 **%s%s got other commitments.** Catch you for next makan session! 👋",
+					"☕ **%s%s going solo today.** Also can lah! ☕",
+					"💼 **%s%s too busy with work.** Don't forget to eat ah! 🛋️",
+					"🥪 **%s%s got other food plans.** Hope it's sedap! 😊",
+					"📱 **%s%s got different arrangement.** See you next time! 🤗",
+					"🍕 **%s%s going for something else.** Enjoy your makan! 😄",
+				}
 			}
 		}
 	case "bft":
