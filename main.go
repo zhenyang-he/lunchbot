@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,6 +19,143 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+)
+
+type SOPEventCallbackReq struct {
+	EventID   string `json:"event_id"`
+	EventType string `json:"event_type"`
+	TimeStamp uint64 `json:"timestamp"`
+	AppID     string `json:"app_id"`
+	Event     Event  `json:"event"`
+}
+
+type SOPEventVerificationResp struct {
+	SeatalkChallenge string `json:"seatalk_challenge"`
+}
+
+type Event struct {
+	SeatalkChallenge string          `json:"seatalk_challenge"`
+	EmployeeCode     string          `json:"employee_code"`
+	EmployeeName     string          `json:"employee_name"`
+	UserName         string          `json:"user_name"`
+	DisplayName      string          `json:"display_name"`
+	FullName         string          `json:"full_name"`
+	Email            string          `json:"email"`
+	GroupID          string          `json:"group_id"`
+	Message          Message         `json:"message"`
+	InteractiveData  InteractiveData `json:"interactive_data"`
+	Value            string          `json:"value"`
+}
+
+type InteractiveData struct {
+	ActionID     string `json:"action_id"`
+	Value        string `json:"value"`
+	ButtonValue  string `json:"button_value"`
+	CallbackData string `json:"callback_data"`
+	Data         string `json:"data"`
+}
+
+type Message struct {
+	Tag  string      `json:"tag"`
+	Text TextMessage `json:"text"`
+}
+
+type TextMessage struct {
+	Content   string `json:"content"`
+	PlainText string `json:"plain_text"`
+}
+
+type AppAccessToken struct {
+	AccessToken string `json:"access_token"`
+	ExpireTime  uint64 `json:"expire"`
+}
+
+type SOPAuthAppResp struct {
+	Code           int    `json:"code"`
+	AppAccessToken string `json:"app_access_token"`
+	Expire         uint64 `json:"expire"`
+}
+
+type LunchParticipant struct {
+	EmployeeCode string
+	DisplayName  string
+}
+
+type SOPSendMessageToUser struct {
+	EmployeeCode string     `json:"employee_code"`
+	Message      SOPMessage `json:"message"`
+}
+
+type SOPSendMessageToGroup struct {
+	GroupID string     `json:"group_id"`
+	Message SOPMessage `json:"message"`
+}
+
+type SOPMessage struct {
+	Tag                string                 `json:"tag"`
+	Text               *SOPTextMsg            `json:"text,omitempty"`
+	InteractiveMessage *SOPInteractiveMessage `json:"interactive_message,omitempty"`
+}
+
+type SOPInteractiveMessage struct {
+	Elements []SOPInteractiveElement `json:"elements"`
+}
+
+type SOPInteractiveElement struct {
+	ElementType string                     `json:"element_type"`
+	Title       *SOPInteractiveTitle       `json:"title,omitempty"`
+	Description *SOPInteractiveDescription `json:"description,omitempty"`
+	Button      *SOPInteractiveButton      `json:"button,omitempty"`
+}
+
+type SOPInteractiveTitle struct {
+	Text string `json:"text"`
+}
+
+type SOPInteractiveDescription struct {
+	Format int    `json:"format"`
+	Text   string `json:"text"`
+}
+
+type SOPInteractiveButton struct {
+	ButtonType   string `json:"button_type"`
+	Text         string `json:"text"`
+	Value        string `json:"value"`
+	CallbackData string `json:"callback_data,omitempty"`
+	ActionID     string `json:"action_id,omitempty"`
+}
+
+type SOPTextMsg struct {
+	Format  int8   `json:"format"`
+	Content string `json:"content"`
+}
+
+type SendMessageToUserResp struct {
+	Code int `json:"code"`
+}
+
+var (
+	appAccessToken      AppAccessToken
+	dailyLunchResponses = make(map[string][]LunchParticipant) // date -> []accepted participants
+	dailyLunchDeclined  = make(map[string][]LunchParticipant) // date -> []declined participants
+	lunchMutex          sync.RWMutex
+
+	// Multiple group support
+	lunchGroupIDs = []string{
+		"ODM2NjA0MzI4OTIy", // Main lunch group ODM2NjA0MzI4OTIy
+		// "ANOTHER_GROUP_ID",     // Add more groups here
+	}
+
+	// BFT reminder group (you can set this to same group or different group)
+	bftGroupID = "MDkwNjg0MDMzMzAw" // BFT reminder group - change this if needed
+
+	// BFT response tracking - daily tracking instead of per-message
+	dailyBFTResponses = make(map[string]map[string][]string) // date -> employeeCode -> [button_types_pressed]
+	bftMutex          sync.RWMutex
+
+	// Lunch response tracking for interactive buttons - daily tracking instead of per-message
+	dailyLunchButtonResponses = make(map[string]map[string][]string) // date -> employeeCode -> [button_types_pressed]
+	lunchButtonMutex          sync.RWMutex
 )
 
 func main() {
@@ -134,145 +272,6 @@ func WithSOPSignatureValidation() gin.HandlerFunc {
 		ctx.Next()
 	}
 }
-
-type SOPEventCallbackReq struct {
-	EventID   string `json:"event_id"`
-	EventType string `json:"event_type"`
-	TimeStamp uint64 `json:"timestamp"`
-	AppID     string `json:"app_id"`
-	Event     Event  `json:"event"`
-}
-
-type SOPEventVerificationResp struct {
-	SeatalkChallenge string `json:"seatalk_challenge"`
-}
-
-type Event struct {
-	SeatalkChallenge string          `json:"seatalk_challenge"`
-	EmployeeCode     string          `json:"employee_code"`
-	EmployeeName     string          `json:"employee_name"`
-	UserName         string          `json:"user_name"`
-	DisplayName      string          `json:"display_name"`
-	FullName         string          `json:"full_name"`
-	Email            string          `json:"email"`
-	GroupID          string          `json:"group_id"`
-	Message          Message         `json:"message"`
-	InteractiveData  InteractiveData `json:"interactive_data"`
-}
-
-type InteractiveData struct {
-	ActionID     string `json:"action_id"`
-	Value        string `json:"value"`
-	ButtonValue  string `json:"button_value"`
-	CallbackData string `json:"callback_data"`
-	Data         string `json:"data"`
-}
-
-type Message struct {
-	Tag  string      `json:"tag"`
-	Text TextMessage `json:"text"`
-}
-
-type TextMessage struct {
-	Content   string `json:"content"`
-	PlainText string `json:"plain_text"`
-}
-
-type AppAccessToken struct {
-	AccessToken string `json:"access_token"`
-	ExpireTime  uint64 `json:"expire"`
-}
-
-type SOPAuthAppResp struct {
-	Code           int    `json:"code"`
-	AppAccessToken string `json:"app_access_token"`
-	Expire         uint64 `json:"expire"`
-}
-
-type LunchParticipant struct {
-	EmployeeCode string
-	DisplayName  string
-}
-
-type SOPSendMessageToUser struct {
-	EmployeeCode string     `json:"employee_code"`
-	Message      SOPMessage `json:"message"`
-}
-
-type SOPSendMessageToGroup struct {
-	GroupID string     `json:"group_id"`
-	Message SOPMessage `json:"message"`
-}
-
-type SOPMessage struct {
-	Tag                string                 `json:"tag"`
-	Text               *SOPTextMsg            `json:"text,omitempty"`
-	InteractiveMessage *SOPInteractiveMessage `json:"interactive_message,omitempty"`
-}
-
-type SOPInteractiveMessage struct {
-	Elements []SOPInteractiveElement `json:"elements"`
-}
-
-type SOPInteractiveElement struct {
-	ElementType string                     `json:"element_type"`
-	Title       *SOPInteractiveTitle       `json:"title,omitempty"`
-	Description *SOPInteractiveDescription `json:"description,omitempty"`
-	Button      *SOPInteractiveButton      `json:"button,omitempty"`
-}
-
-type SOPInteractiveTitle struct {
-	Text string `json:"text"`
-}
-
-type SOPInteractiveDescription struct {
-	Format int    `json:"format"`
-	Text   string `json:"text"`
-}
-
-type SOPInteractiveButton struct {
-	ButtonType   string `json:"button_type"`
-	Text         string `json:"text"`
-	Value        string `json:"value"`
-	CallbackData string `json:"callback_data,omitempty"`
-	ActionID     string `json:"action_id,omitempty"`
-}
-
-type SOPTextMsg struct {
-	Format  int8   `json:"format"`
-	Content string `json:"content"`
-}
-
-type SendMessageToUserResp struct {
-	Code int `json:"code"`
-}
-
-type SeaTalkUserInfo struct {
-	Code int `json:"code"`
-	Data struct {
-		EmployeeCode string `json:"employee_code"`
-		Name         string `json:"name"`
-		DisplayName  string `json:"display_name"`
-		Email        string `json:"email"`
-	} `json:"data"`
-}
-
-var (
-	appAccessToken      AppAccessToken
-	dailyLunchResponses = make(map[string][]LunchParticipant) // date -> []participants
-	lunchMutex          sync.RWMutex
-	lastInviteDate      string // Track when we last sent an invite
-	inviteMutex         sync.Mutex
-
-	// Multiple group support
-	lunchGroupIDs = []string{
-		"ODM2NjA0MzI4OTIy", // Main lunch group
-		// "ANOTHER_GROUP_ID",     // Add more groups here
-	}
-
-	// BFT reminder group (you can set this to same group or different group)
-	bftGroupID = "MDkwNjg0MDMzMzAw" // BFT reminder group - change this if needed
-)
 
 func GetAppAccessToken() AppAccessToken {
 	timeNow := time.Now().Unix()
@@ -404,6 +403,78 @@ func SendMessageToGroup(ctx context.Context, message, groupID string) error {
 	return nil
 }
 
+func handleMessageCommand(ctx *gin.Context, reqSOP SOPEventCallbackReq, isPrivate bool) {
+	message := reqSOP.Event.Message.Text.Content
+	if message == "" {
+		message = reqSOP.Event.Message.Text.PlainText
+	}
+
+	// Helper function to send response to appropriate channel
+	sendResponse := func(msg string) error {
+		if isPrivate {
+			return SendMessageToUser(ctx, msg, reqSOP.Event.EmployeeCode)
+		} else {
+			return SendMessageToGroup(ctx, msg, reqSOP.Event.GroupID)
+		}
+	}
+
+	if strings.Contains(strings.ToLower(message), "help") {
+		helpMsg := `🍽️ **Lunch Bot Commands**
+
+**How to use:**
+• Type 'help' to trigger this message
+• Type 'jio' to trigger lunch invite
+• Type 'status' to see today's lunch invite status
+• Type 'bft' to trigger BFT reminder
+
+**Features:**
+• Daily automatic lunch invites at 11:30 AM (weekdays only)
+• Daily automatic BFT reminders at 12:00 PM (weekdays only)`
+
+		if err := sendResponse(helpMsg); err != nil {
+			log.Printf("ERROR: Failed to send help message: %v", err)
+		}
+	} else if strings.Contains(strings.ToLower(message), "status") {
+		statusMsg := getTodayLunchStatus()
+		if err := sendResponse(statusMsg); err != nil {
+			log.Printf("ERROR: Failed to send status message: %v", err)
+		}
+	} else if strings.Contains(strings.ToLower(message), "bft") {
+		if err := sendBFTReminder(); err != nil {
+			log.Printf("ERROR: Failed to send BFT reminder: %v", err)
+			if err := sendResponse("❌ Failed to send BFT reminder to group"); err != nil {
+				log.Printf("ERROR: Failed to send error message: %v", err)
+			}
+		} else {
+			// Send confirmation only for private messages
+			if isPrivate {
+				if err := sendResponse("💪 BFT reminder sent successfully to group!"); err != nil {
+					log.Printf("ERROR: Failed to send confirmation message: %v", err)
+				}
+			}
+		}
+	} else if strings.Contains(strings.ToLower(message), "jio") {
+		if err := sendLunchInvite(); err != nil {
+			log.Printf("ERROR: Failed to send lunch invite: %v", err)
+			if err := sendResponse("❌ Failed to send lunch invite to groups"); err != nil {
+				log.Printf("ERROR: Failed to send error message: %v", err)
+			}
+		} else {
+			// Send confirmation only for private messages
+			if isPrivate {
+				if err := sendResponse("✅ Lunch invite sent successfully to 1 group(s)!"); err != nil {
+					log.Printf("ERROR: Failed to send confirmation message: %v", err)
+				}
+			}
+		}
+	} else {
+		// Default response for other messages
+		if err := sendResponse("Hello! Type 'help' to see available commands!"); err != nil {
+			log.Printf("ERROR: Failed to send default response: %v", err)
+		}
+	}
+}
+
 // Lunch invite scheduler - runs daily at 11:30 AM
 func startLunchScheduler() {
 	log.Println("INFO: Starting lunch invite scheduler")
@@ -451,476 +522,89 @@ func startLunchScheduler() {
 }
 
 func sendLunchInvite() error {
-	// Prevent duplicate invites on the same day
-	inviteMutex.Lock()
-	defer inviteMutex.Unlock()
-
 	today := time.Now().In(getTimezone()).Format("2006-01-02")
-	if lastInviteDate == today {
-		log.Printf("INFO: Lunch invite already sent today (%s), skipping", today)
-		return nil
-	}
-
 	messageID := fmt.Sprintf("lunch_%d", time.Now().Unix())
+	todayFormatted := time.Now().In(getTimezone()).Format("Monday, 2 January 2006")
 
 	// Send to all configured groups
 	for _, groupID := range lunchGroupIDs {
-		if err := sendLunchInviteToGroup(groupID, messageID); err != nil {
-			log.Printf("ERROR: Failed to send lunch invite to group %s: %v", groupID, err)
-			continue
-		}
-		log.Printf("INFO: Lunch invite sent successfully to group %s", groupID)
-	}
-
-	// Mark that we've sent the invite today
-	lastInviteDate = today
-	log.Printf("INFO: Marked lunch invite as sent for date: %s", today)
-
-	return nil
-}
-
-func getTimezone() *time.Location {
-	location, err := time.LoadLocation("Asia/Singapore")
-	if err != nil {
-		return time.UTC
-	}
-	return location
-}
-
-func getTodayLunchStatus() string {
-	lunchMutex.RLock()
-	defer lunchMutex.RUnlock()
-
-	today := time.Now().In(getTimezone()).Format("2006-01-02")
-	participants, exists := dailyLunchResponses[today]
-
-	if !exists || len(participants) == 0 {
-		return fmt.Sprintf("📊 **Today's Status (%s):**\n\n👥 Total people: 0\n❌ No one has accepted lunch yet today", today)
-	}
-
-	// Format participant names
-	var namesList []string
-	for _, participant := range participants {
-		namesList = append(namesList, fmt.Sprintf("• %s", participant.DisplayName))
-	}
-
-	statusMsg := fmt.Sprintf("📊 **Today's Status (%s):**\n\n👥 Total people: %d\n✅ Accepted by:\n%s",
-		today,
-		len(participants),
-		strings.Join(namesList, "\n"))
-
-	return statusMsg
-}
-
-func sendLunchInviteToGroup(groupID, messageID string) error {
-	return sendInteractiveLunchInvite(groupID, messageID)
-}
-
-func sendInteractiveLunchInvite(groupID, messageID string) error {
-	today := time.Now().In(getTimezone()).Format("Monday, 2 January 2006")
-
-	bodyJson, _ := json.Marshal(SOPSendMessageToGroup{
-		GroupID: groupID,
-		Message: SOPMessage{
-			Tag: "interactive_message",
-			InteractiveMessage: &SOPInteractiveMessage{
-				Elements: []SOPInteractiveElement{
-					{
-						ElementType: "title",
-						Title: &SOPInteractiveTitle{
-							Text: fmt.Sprintf("🍽️ Lunch Invite for %s!", today),
+		bodyJson, _ := json.Marshal(SOPSendMessageToGroup{
+			GroupID: groupID,
+			Message: SOPMessage{
+				Tag: "interactive_message",
+				InteractiveMessage: &SOPInteractiveMessage{
+					Elements: []SOPInteractiveElement{
+						{
+							ElementType: "title",
+							Title: &SOPInteractiveTitle{
+								Text: fmt.Sprintf("🍽️ Lunch Invite for %s!", todayFormatted),
+							},
 						},
-					},
-					{
-						ElementType: "description",
-						Description: &SOPInteractiveDescription{
-							Format: 1,
-							Text:   "Who's interested in lunch today? Click if you're joining!",
+						{
+							ElementType: "description",
+							Description: &SOPInteractiveDescription{
+								Format: 1,
+								Text:   "Who's interested in lunch today at 12:15pm?",
+							},
 						},
-					},
-					{
-						ElementType: "button",
-						Button: &SOPInteractiveButton{
-							ButtonType:   "callback",
-							Text:         "Accept/Decline 🍽️",
-							Value:        "lunch_accept_" + messageID,
-							CallbackData: "lunch_accept_" + messageID,
-							ActionID:     "lunch_accept_" + messageID,
+						{
+							ElementType: "button",
+							Button: &SOPInteractiveButton{
+								ButtonType:   "callback",
+								Text:         "I'm joining! 🍽️",
+								Value:        "lunch_join_" + messageID,
+								CallbackData: "lunch_join_" + messageID,
+								ActionID:     "lunch_join_" + messageID,
+							},
+						},
+						{
+							ElementType: "button",
+							Button: &SOPInteractiveButton{
+								ButtonType:   "callback",
+								Text:         "I'm skipping 😴",
+								Value:        "lunch_skip_" + messageID,
+								CallbackData: "lunch_skip_" + messageID,
+								ActionID:     "lunch_skip_" + messageID,
+							},
 						},
 					},
 				},
 			},
-		},
-	})
+		})
 
-	req, err := http.NewRequest("POST", "https://openapi.seatalk.io/messaging/v2/group_chat", bytes.NewBuffer(bodyJson))
-	if err != nil {
-		return err
+		req, err := http.NewRequest("POST", "https://openapi.seatalk.io/messaging/v2/group_chat", bytes.NewBuffer(bodyJson))
+		if err != nil {
+			log.Printf("ERROR: Failed to send lunch invite to group %s: %v", groupID, err)
+			continue
+		}
+
+		req.Header.Add("Content-Type", "application/json")
+		req.Header.Add("Authorization", "Bearer "+GetAppAccessToken().AccessToken)
+
+		client := &http.Client{}
+		res, err := client.Do(req)
+		if err != nil {
+			log.Printf("ERROR: Failed to send lunch invite to group %s: %v", groupID, err)
+			continue
+		}
+		defer res.Body.Close()
+
+		resp := &SendMessageToUserResp{}
+		if err := json.NewDecoder(res.Body).Decode(resp); err != nil {
+			log.Printf("ERROR: Failed to send lunch invite to group %s: %v", groupID, err)
+			continue
+		}
+
+		if resp.Code != 0 {
+			log.Printf("ERROR: Failed to send lunch invite to group %s, response code: %v", groupID, resp.Code)
+			continue
+		}
+
+		log.Printf("INFO: Lunch invite sent successfully to group %s", groupID)
 	}
 
-	req.Header.Add("Content-Type", "application/json")
-	req.Header.Add("Authorization", "Bearer "+GetAppAccessToken().AccessToken)
-
-	client := &http.Client{}
-	res, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-
-	resp := &SendMessageToUserResp{}
-	if err := json.NewDecoder(res.Body).Decode(resp); err != nil {
-		return err
-	}
-
-	if resp.Code != 0 {
-		log.Printf("INFO: Interactive message not supported (code %d), this is expected", resp.Code)
-		return fmt.Errorf("failed to send lunch invite, response code: %v", resp.Code)
-	}
-
+	log.Printf("INFO: Lunch invite sent to %d group(s) for %s", len(lunchGroupIDs), today)
 	return nil
-}
-
-func handleMessageCommand(ctx *gin.Context, reqSOP SOPEventCallbackReq, isPrivate bool) {
-	message := reqSOP.Event.Message.Text.Content
-	if message == "" {
-		message = reqSOP.Event.Message.Text.PlainText
-	}
-
-	// Helper function to send response to appropriate channel
-	sendResponse := func(msg string) error {
-		if isPrivate {
-			return SendMessageToUser(ctx, msg, reqSOP.Event.EmployeeCode)
-		} else {
-			return SendMessageToGroup(ctx, msg, reqSOP.Event.GroupID)
-		}
-	}
-
-	if strings.Contains(strings.ToLower(message), "help") {
-		helpMsg := `🍽️ **Lunch Bot Commands**
-
-**How to use:**
-• Type "jio" to trigger lunch invite
-• Type "status" to see today's lunch invite status
-• Type "bft" to trigger BFT reminder
-• Click "Accept/Decline 🍽️" button to join lunch
-• Click "Accept/Decline 🍽️" button again to decline (if already joined)
-
-**Features:**
-• Daily automatic lunch invites at 11:30 AM (weekdays only)
-• Daily automatic BFT reminders at 12:00 PM (weekdays only)`
-
-		if err := sendResponse(helpMsg); err != nil {
-			log.Printf("ERROR: Failed to send help message: %v", err)
-		}
-	} else if strings.Contains(strings.ToLower(message), "status") {
-		statusMsg := getTodayLunchStatus()
-		if err := sendResponse(statusMsg); err != nil {
-			log.Printf("ERROR: Failed to send status message: %v", err)
-		}
-	} else if strings.Contains(strings.ToLower(message), "bft") {
-		if err := sendBFTReminder(); err != nil {
-			log.Printf("ERROR: Failed to send BFT reminder: %v", err)
-			if err := sendResponse("❌ Failed to send BFT reminder to group"); err != nil {
-				log.Printf("ERROR: Failed to send error message: %v", err)
-			}
-		} else {
-			// Send confirmation only for private messages
-			if isPrivate {
-				if err := sendResponse("💪 BFT reminder sent successfully to group!"); err != nil {
-					log.Printf("ERROR: Failed to send confirmation message: %v", err)
-				}
-			}
-		}
-	} else if strings.Contains(strings.ToLower(message), "jio") {
-		if err := sendLunchInvite(); err != nil {
-			log.Printf("ERROR: Failed to send lunch invite: %v", err)
-			if err := sendResponse("❌ Failed to send lunch invite to groups"); err != nil {
-				log.Printf("ERROR: Failed to send error message: %v", err)
-			}
-		} else {
-			// Send confirmation only for private messages
-			if isPrivate {
-				if err := sendResponse("✅ Lunch invite sent successfully to 1 group(s)!"); err != nil {
-					log.Printf("ERROR: Failed to send confirmation message: %v", err)
-				}
-			}
-		}
-	} else {
-		// Default response for other messages
-		if err := sendResponse("Hello! Send 'help' to see available commands or 'jio' to trigger a lunch invite!"); err != nil {
-			log.Printf("ERROR: Failed to send default response: %v", err)
-		}
-	}
-}
-
-func handleButtonClick(ctx *gin.Context, reqSOP SOPEventCallbackReq) {
-	groupID := reqSOP.Event.GroupID
-	employeeCode := reqSOP.Event.EmployeeCode
-
-	// Check if user has already accepted today
-	lunchMutex.RLock()
-	today := time.Now().Format("2006-01-02")
-	_, exists := dailyLunchResponses[today]
-	hasAccepted := false
-
-	if exists {
-		for _, participant := range dailyLunchResponses[today] {
-			if participant.EmployeeCode == employeeCode {
-				hasAccepted = true
-				break
-			}
-		}
-	}
-	lunchMutex.RUnlock()
-
-	if hasAccepted {
-		// User has already accepted, so decline them
-		handleDailyLunchDeclineWithEvent(ctx, reqSOP.Event, groupID)
-	} else {
-		// User hasn't accepted yet, so accept them
-		handleDailyLunchAcceptWithEvent(ctx, reqSOP.Event, groupID)
-	}
-}
-
-// Cache for employee names to avoid repeated API calls
-var employeeNameCache = make(map[string]string)
-var nameCacheMutex sync.RWMutex
-
-func getEmployeeDisplayName(event Event) string {
-	// Try to get the best available name from webhook first
-	if event.FullName != "" {
-		return event.FullName
-	}
-	if event.DisplayName != "" {
-		return event.DisplayName
-	}
-	if event.EmployeeName != "" {
-		return event.EmployeeName
-	}
-	if event.UserName != "" {
-		return event.UserName
-	}
-
-	// Try to create a nice name from email
-	if event.Email != "" {
-		return formatEmailAsName(event.Email)
-	}
-
-	// If no name in webhook, try to fetch from SeaTalk API (fallback)
-	if name := fetchEmployeeName(event.EmployeeCode); name != "" {
-		return name
-	}
-
-	// Fallback to employee code
-	return event.EmployeeCode
-}
-
-func formatEmailAsName(email string) string {
-	// Extract name part from email (before @)
-	// john.smith@company.com -> john.smith
-	parts := strings.Split(email, "@")
-	if len(parts) == 0 {
-		return email
-	}
-
-	namePart := parts[0]
-
-	// Convert dots and underscores to spaces and capitalize
-	// john.smith -> John Smith
-	// john_smith -> John Smith
-	namePart = strings.ReplaceAll(namePart, ".", " ")
-	namePart = strings.ReplaceAll(namePart, "_", " ")
-
-	// Capitalize each word
-	words := strings.Fields(namePart)
-	for i, word := range words {
-		if len(word) > 0 {
-			words[i] = strings.ToUpper(word[:1]) + strings.ToLower(word[1:])
-		}
-	}
-
-	return strings.Join(words, " ")
-}
-
-func fetchEmployeeName(employeeCode string) string {
-	// Check cache first
-	nameCacheMutex.RLock()
-	if cachedName, exists := employeeNameCache[employeeCode]; exists {
-		nameCacheMutex.RUnlock()
-		return cachedName
-	}
-	nameCacheMutex.RUnlock()
-
-	// Try to fetch from SeaTalk User API
-	url := fmt.Sprintf("https://openapi.seatalk.io/user/v1/info?employee_code=%s", employeeCode)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		log.Printf("ERROR: Failed to create user info request: %v", err)
-		return ""
-	}
-
-	token := GetAppAccessToken().AccessToken
-	req.Header.Add("Authorization", "Bearer "+token)
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	res, err := client.Do(req)
-	if err != nil {
-		log.Printf("ERROR: Failed to fetch user info: %v", err)
-		return ""
-	}
-	defer res.Body.Close()
-
-	var userInfo SeaTalkUserInfo
-	if err := json.NewDecoder(res.Body).Decode(&userInfo); err != nil {
-		log.Printf("ERROR: Failed to decode user info: %v", err)
-		return ""
-	}
-
-	if userInfo.Code != 0 {
-		log.Printf("WARNING: SeaTalk user info API returned code %d for employee %s", userInfo.Code, employeeCode)
-		return ""
-	}
-
-	// Use display name if available, otherwise use name
-	displayName := userInfo.Data.DisplayName
-	if displayName == "" {
-		displayName = userInfo.Data.Name
-	}
-
-	if displayName != "" {
-		// Cache the result
-		nameCacheMutex.Lock()
-		employeeNameCache[employeeCode] = displayName
-		nameCacheMutex.Unlock()
-
-		log.Printf("INFO: Fetched name for employee %s: %s", employeeCode, displayName)
-		return displayName
-	}
-
-	return ""
-}
-
-func handleDailyLunchAcceptWithEvent(ctx *gin.Context, event Event, groupID string) {
-	lunchMutex.Lock()
-	defer lunchMutex.Unlock()
-
-	employeeCode := event.EmployeeCode
-	displayName := getEmployeeDisplayName(event)
-
-	// Use today's date as the key for daily tracking
-	today := time.Now().Format("2006-01-02")
-
-	// Initialize today's responses if it doesn't exist
-	if _, exists := dailyLunchResponses[today]; !exists {
-		dailyLunchResponses[today] = []LunchParticipant{}
-	}
-
-	// Check if this employee already accepted today
-	for _, participant := range dailyLunchResponses[today] {
-		if participant.EmployeeCode == employeeCode {
-			log.Printf("INFO: Employee %s (%s) already accepted lunch today (%s) - ignoring duplicate click", employeeCode, displayName, today)
-			// Silently ignore duplicate clicks - no message sent
-			return
-		}
-	}
-
-	// Add employee to today's responses
-	newParticipant := LunchParticipant{
-		EmployeeCode: employeeCode,
-		DisplayName:  displayName,
-	}
-	dailyLunchResponses[today] = append(dailyLunchResponses[today], newParticipant)
-	newCount := len(dailyLunchResponses[today])
-
-	log.Printf("INFO: Employee %s (%s) accepted today's lunch (%s). Total acceptances: %d", employeeCode, displayName, today, newCount)
-
-	// Send enhanced confirmation message
-	confirmMsg := fmt.Sprintf(`🎉 **%s just accepted today's lunch!**
-
-📊 **Today's Status (%s):**
-👥 Total people: **%d**
-✅ Accepted by:
-%s
-
-%s`,
-		displayName,
-		today,
-		newCount,
-		formatParticipantNames(dailyLunchResponses[today]),
-		getLunchStatusEmoji(newCount))
-
-	if err := SendMessageToGroup(ctx, confirmMsg, groupID); err != nil {
-		log.Printf("ERROR: Failed to send lunch confirmation: %v", err)
-	}
-}
-
-func handleDailyLunchDeclineWithEvent(ctx *gin.Context, event Event, groupID string) {
-	lunchMutex.Lock()
-	defer lunchMutex.Unlock()
-
-	employeeCode := event.EmployeeCode
-	displayName := getEmployeeDisplayName(event)
-
-	// Use today's date as the key for daily tracking
-	today := time.Now().Format("2006-01-02")
-
-	// Initialize today's responses if it doesn't exist
-	if _, exists := dailyLunchResponses[today]; !exists {
-		dailyLunchResponses[today] = []LunchParticipant{}
-		return
-	}
-
-	// Find and remove the employee from today's responses
-	originalCount := len(dailyLunchResponses[today])
-	var updatedParticipants []LunchParticipant
-	found := false
-
-	for _, participant := range dailyLunchResponses[today] {
-		if participant.EmployeeCode != employeeCode {
-			updatedParticipants = append(updatedParticipants, participant)
-		} else {
-			found = true
-		}
-	}
-
-	if !found {
-		log.Printf("INFO: Employee %s (%s) tried to decline lunch but was not in the accepted list for today (%s) - ignoring", employeeCode, displayName, today)
-		// Silently ignore if they weren't in the list
-		return
-	}
-
-	// Update the responses
-	dailyLunchResponses[today] = updatedParticipants
-	newCount := len(dailyLunchResponses[today])
-
-	log.Printf("INFO: Employee %s (%s) declined today's lunch (%s). Total acceptances: %d (was %d)", employeeCode, displayName, today, newCount, originalCount)
-
-	// Send decline confirmation message
-	var declineMsg string
-	if newCount == 0 {
-		declineMsg = fmt.Sprintf(`😔 **%s declined today's lunch**
-
-📊 **Today's Status (%s):**
-👥 Total people: **0**
-❌ No one has accepted lunch yet today
-
-Maybe next time! 🍽️`, displayName, today)
-	} else {
-		declineMsg = fmt.Sprintf(`😔 **%s declined today's lunch**
-
-📊 **Today's Status (%s):**
-👥 Total people: **%d**
-✅ Accepted by:
-%s
-
-%s`, displayName, today, newCount, formatParticipantNames(dailyLunchResponses[today]), getLunchStatusEmoji(newCount))
-	}
-
-	if err := SendMessageToGroup(ctx, declineMsg, groupID); err != nil {
-		log.Printf("ERROR: Failed to send lunch decline message: %v", err)
-	}
 }
 
 // BFT reminder scheduler - runs daily at 12:00 PM on weekdays
@@ -958,7 +642,7 @@ func startBFTScheduler() {
 		// Double-check it's a weekday before sending (safety check)
 		currentTime := time.Now().In(location)
 		if currentTime.Weekday() != time.Saturday && currentTime.Weekday() != time.Sunday {
-			// Send BFT reminder
+			// Send BFT reminder (scheduler sends once, but manual "bft" commands can send more)
 			if err := sendBFTReminder(); err != nil {
 				log.Printf("ERROR: Failed to send BFT reminder: %v", err)
 			}
@@ -971,10 +655,25 @@ func startBFTScheduler() {
 
 func sendBFTReminder() error {
 	today := time.Now().In(getTimezone()).Format("Monday, 2 January 2006")
+	messageID := fmt.Sprintf("%d", time.Now().Unix())
 
-	message := fmt.Sprintf(`💪 **BFT Session Reminder - %s**
-
-🏃‍♂️ **Body Fit Training session is coming up!**
+	bodyJson, _ := json.Marshal(SOPSendMessageToGroup{
+		GroupID: bftGroupID,
+		Message: SOPMessage{
+			Tag: "interactive_message",
+			InteractiveMessage: &SOPInteractiveMessage{
+				Elements: []SOPInteractiveElement{
+					{
+						ElementType: "title",
+						Title: &SOPInteractiveTitle{
+							Text: fmt.Sprintf("💪 BFT Session Reminder - %s", today),
+						},
+					},
+					{
+						ElementType: "description",
+						Description: &SOPInteractiveDescription{
+							Format: 1,
+							Text: `🏃‍♂️ **Body Fit Training session is coming up at 12:15pm!**
 
 📋 **Please prepare:**
 • Wear appropriate workout clothes
@@ -985,14 +684,367 @@ func sendBFTReminder() error {
 
 ⏰ **Time to get fit and healthy!**
 
-Let's do this together! 🔥`, today)
+Let us know if you're joining today! 🔥`,
+						},
+					},
+					{
+						ElementType: "button",
+						Button: &SOPInteractiveButton{
+							ButtonType:   "callback",
+							Text:         "I'm going! 💪",
+							Value:        "bft_going_" + messageID,
+							CallbackData: "bft_going_" + messageID,
+							ActionID:     "bft_going_" + messageID,
+						},
+					},
+					{
+						ElementType: "button",
+						Button: &SOPInteractiveButton{
+							ButtonType:   "callback",
+							Text:         "I'm skipping today 😴",
+							Value:        "bft_skip_" + messageID,
+							CallbackData: "bft_skip_" + messageID,
+							ActionID:     "bft_skip_" + messageID,
+						},
+					},
+				},
+			},
+		},
+	})
 
-	if err := SendMessageToGroup(context.Background(), message, bftGroupID); err != nil {
-		return fmt.Errorf("failed to send BFT reminder to group %s: %v", bftGroupID, err)
+	req, err := http.NewRequest("POST", "https://openapi.seatalk.io/messaging/v2/group_chat", bytes.NewBuffer(bodyJson))
+	if err != nil {
+		return err
 	}
 
-	log.Printf("INFO: BFT reminder sent successfully to group %s", bftGroupID)
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("Authorization", "Bearer "+GetAppAccessToken().AccessToken)
+
+	client := &http.Client{}
+	res, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	resp := &SendMessageToUserResp{}
+	if err := json.NewDecoder(res.Body).Decode(resp); err != nil {
+		return err
+	}
+
+	if resp.Code != 0 {
+		return fmt.Errorf("failed to send BFT interactive reminder, response code: %v", resp.Code)
+	}
+
+	log.Printf("INFO: BFT interactive reminder sent successfully to group %s", bftGroupID)
 	return nil
+}
+
+func handleButtonClick(ctx *gin.Context, reqSOP SOPEventCallbackReq) {
+	buttonValue := reqSOP.Event.Value
+
+	// Check if this is a BFT button
+	if strings.Contains(buttonValue, "bft_going_") || strings.Contains(buttonValue, "bft_skip_") {
+		handleBFTButtonClick(ctx, reqSOP)
+		return
+	}
+
+	// Check if this is a lunch interactive button
+	if strings.Contains(buttonValue, "lunch_join_") || strings.Contains(buttonValue, "lunch_skip_") {
+		handleLunchButtonClick(ctx, reqSOP)
+		return
+	}
+}
+
+func handleLunchButtonClick(ctx *gin.Context, reqSOP SOPEventCallbackReq) {
+	employeeCode := reqSOP.Event.EmployeeCode
+	buttonValue := reqSOP.Event.Value
+	groupID := reqSOP.Event.GroupID
+	displayName := getEmployeeDisplayName(reqSOP.Event)
+	today := time.Now().Format("2006-01-02")
+
+	// Extract button type from the button value
+	var buttonType string
+	if strings.Contains(buttonValue, "lunch_join_") {
+		buttonType = "join"
+	} else if strings.Contains(buttonValue, "lunch_skip_") {
+		buttonType = "skip"
+	} else {
+		log.Printf("WARNING: Unknown lunch button value: '%s'", buttonValue)
+		return
+	}
+
+	// Check user's previous responses for today (across all lunch invites)
+	lunchButtonMutex.Lock()
+	if dailyLunchButtonResponses[today] == nil {
+		dailyLunchButtonResponses[today] = make(map[string][]string)
+	}
+
+	userResponses := dailyLunchButtonResponses[today][employeeCode]
+
+	// Check if user has already pressed both buttons today
+	hasJoin := containsString(userResponses, "join")
+	hasSkip := containsString(userResponses, "skip")
+
+	if hasJoin && hasSkip {
+		lunchButtonMutex.Unlock()
+		log.Printf("INFO: User %s (%s) has already used both lunch buttons today (%s), blocking further clicks", displayName, employeeCode, today)
+		return
+	}
+
+	// Check if user is clicking the same button again today
+	if containsString(userResponses, buttonType) {
+		lunchButtonMutex.Unlock()
+		log.Printf("INFO: User %s (%s) already clicked %s button for lunch today (%s), ignoring duplicate", displayName, employeeCode, buttonType, today)
+		return
+	}
+
+	// Add this button type to user's daily response history
+	dailyLunchButtonResponses[today][employeeCode] = append(userResponses, buttonType)
+	isSecondButton := len(userResponses) > 0 // This will be the second button press today
+	lunchButtonMutex.Unlock()
+
+	// Process the button click using existing lunch logic
+	switch buttonType {
+	case "join":
+		handleLunchJoin(ctx, reqSOP.Event, groupID, isSecondButton)
+	case "skip":
+		handleLunchSkip(ctx, reqSOP.Event, groupID, isSecondButton)
+	}
+}
+
+func handleBFTButtonClick(ctx *gin.Context, reqSOP SOPEventCallbackReq) {
+	employeeCode := reqSOP.Event.EmployeeCode
+	buttonValue := reqSOP.Event.Value
+	groupID := reqSOP.Event.GroupID
+	displayName := getEmployeeDisplayName(reqSOP.Event)
+	today := time.Now().Format("2006-01-02")
+
+	// Extract button type from the button value
+	var buttonType string
+	if strings.Contains(buttonValue, "bft_going_") {
+		buttonType = "going"
+	} else if strings.Contains(buttonValue, "bft_skip_") {
+		buttonType = "skip"
+	} else {
+		log.Printf("WARNING: Unknown BFT button value: '%s'", buttonValue)
+		return
+	}
+
+	// Check user's previous responses for today (across all BFT reminders)
+	bftMutex.Lock()
+	if dailyBFTResponses[today] == nil {
+		dailyBFTResponses[today] = make(map[string][]string)
+	}
+
+	userResponses := dailyBFTResponses[today][employeeCode]
+
+	// Check if user has already pressed both buttons today
+	hasGoing := containsString(userResponses, "going")
+	hasSkip := containsString(userResponses, "skip")
+
+	if hasGoing && hasSkip {
+		bftMutex.Unlock()
+		log.Printf("INFO: User %s (%s) has already used both BFT buttons today (%s), blocking further clicks", displayName, employeeCode, today)
+		return
+	}
+
+	// Check if user is clicking the same button again today
+	if containsString(userResponses, buttonType) {
+		bftMutex.Unlock()
+		log.Printf("INFO: User %s (%s) already clicked %s button for BFT today (%s), ignoring duplicate", displayName, employeeCode, buttonType, today)
+		return
+	}
+
+	// Add this button type to user's daily response history
+	dailyBFTResponses[today][employeeCode] = append(userResponses, buttonType)
+	isSecondButton := len(userResponses) > 0 // This will be the second button press today
+	bftMutex.Unlock()
+
+	// Process the button click
+	switch buttonType {
+	case "going":
+		handleBFTGoing(ctx, reqSOP.Event, groupID, isSecondButton)
+	case "skip":
+		handleBFTSkip(ctx, reqSOP.Event, groupID, isSecondButton)
+	}
+}
+
+func handleLunchJoin(ctx *gin.Context, event Event, groupID string, isSecondButton bool) {
+	// Use the existing lunch accept logic
+	lunchMutex.Lock()
+	defer lunchMutex.Unlock()
+
+	employeeCode := event.EmployeeCode
+	displayName := getEmployeeDisplayName(event)
+	today := time.Now().Format("2006-01-02")
+
+	// Initialize today's responses if they don't exist
+	if _, exists := dailyLunchResponses[today]; !exists {
+		dailyLunchResponses[today] = []LunchParticipant{}
+	}
+	if _, exists := dailyLunchDeclined[today]; !exists {
+		dailyLunchDeclined[today] = []LunchParticipant{}
+	}
+
+	// Check if this employee already accepted today
+	for _, participant := range dailyLunchResponses[today] {
+		if participant.EmployeeCode == employeeCode {
+			return
+		}
+	}
+
+	// Remove employee from declined list if they were previously declined
+	var updatedDeclined []LunchParticipant
+	for _, participant := range dailyLunchDeclined[today] {
+		if participant.EmployeeCode != employeeCode {
+			updatedDeclined = append(updatedDeclined, participant)
+		}
+	}
+	dailyLunchDeclined[today] = updatedDeclined
+
+	// Add employee to today's accepted responses
+	newParticipant := LunchParticipant{
+		EmployeeCode: employeeCode,
+		DisplayName:  displayName,
+	}
+	dailyLunchResponses[today] = append(dailyLunchResponses[today], newParticipant)
+
+	// Send confirmation message with randomized cheer
+	cheerMessage := getRandomCheerMessage("lunch", "accept", displayName, isSecondButton)
+	confirmMsg := formatLunchStatusWithData([]string{cheerMessage}, today, dailyLunchResponses[today], dailyLunchDeclined[today])
+
+	if err := SendMessageToGroup(ctx, confirmMsg, groupID); err != nil {
+		log.Printf("ERROR: Failed to send lunch join confirmation: %v", err)
+	} else {
+		log.Printf("INFO: %s (%s) joined lunch for %s. Total accepted: %d", displayName, employeeCode, today, len(dailyLunchResponses[today]))
+	}
+}
+
+func handleLunchSkip(ctx *gin.Context, event Event, groupID string, isSecondButton bool) {
+	lunchMutex.Lock()
+	defer lunchMutex.Unlock()
+
+	employeeCode := event.EmployeeCode
+	displayName := getEmployeeDisplayName(event)
+	today := time.Now().Format("2006-01-02")
+
+	// Initialize today's responses if they don't exist
+	if _, exists := dailyLunchResponses[today]; !exists {
+		dailyLunchResponses[today] = []LunchParticipant{}
+	}
+	if _, exists := dailyLunchDeclined[today]; !exists {
+		dailyLunchDeclined[today] = []LunchParticipant{}
+	}
+
+	// Remove employee from accepted list if they were previously joined
+	var updatedAccepted []LunchParticipant
+	for _, participant := range dailyLunchResponses[today] {
+		if participant.EmployeeCode != employeeCode {
+			updatedAccepted = append(updatedAccepted, participant)
+		}
+	}
+	dailyLunchResponses[today] = updatedAccepted
+
+	// Add employee to declined list if not already there
+	alreadyDeclined := false
+	for _, participant := range dailyLunchDeclined[today] {
+		if participant.EmployeeCode == employeeCode {
+			alreadyDeclined = true
+			break
+		}
+	}
+
+	if !alreadyDeclined {
+		newDeclined := LunchParticipant{
+			EmployeeCode: employeeCode,
+			DisplayName:  displayName,
+		}
+		dailyLunchDeclined[today] = append(dailyLunchDeclined[today], newDeclined)
+	}
+
+	// Send skip message with current status
+	cheerMessage := getRandomCheerMessage("lunch", "decline", displayName, isSecondButton)
+	skipMsg := formatLunchStatusWithData([]string{cheerMessage}, today, dailyLunchResponses[today], dailyLunchDeclined[today])
+
+	if err := SendMessageToGroup(ctx, skipMsg, groupID); err != nil {
+		log.Printf("ERROR: Failed to send lunch skip confirmation: %v", err)
+	} else {
+		log.Printf("INFO: %s (%s) declined lunch for %s. Total accepted: %d, Total declined: %d", displayName, employeeCode, today, len(dailyLunchResponses[today]), len(dailyLunchDeclined[today]))
+	}
+}
+
+func handleBFTGoing(ctx *gin.Context, event Event, groupID string, isSecondButton bool) {
+	displayName := getEmployeeDisplayName(event)
+	today := time.Now().Format("2006-01-02")
+
+	message := getRandomCheerMessage("bft", "going", displayName, isSecondButton)
+
+	if err := SendMessageToGroup(ctx, message, groupID); err != nil {
+		log.Printf("ERROR: Failed to send BFT going confirmation: %v", err)
+	} else {
+		log.Printf("INFO: %s (%s) going to BFT for %s", displayName, event.EmployeeCode, today)
+	}
+}
+
+func handleBFTSkip(ctx *gin.Context, event Event, groupID string, isSecondButton bool) {
+	displayName := getEmployeeDisplayName(event)
+	today := time.Now().Format("2006-01-02")
+
+	message := getRandomCheerMessage("bft", "skip", displayName, isSecondButton)
+
+	if err := SendMessageToGroup(ctx, message, groupID); err != nil {
+		log.Printf("ERROR: Failed to send BFT skip confirmation: %v", err)
+	} else {
+		log.Printf("INFO: %s (%s) skipping BFT for %s", displayName, event.EmployeeCode, today)
+	}
+}
+
+// Helper function to check if slice contains a string
+func containsString(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+func getEmployeeDisplayName(event Event) string {
+	// Create name from email
+	if event.Email != "" {
+		return formatEmailAsName(event.Email)
+	}
+
+	// Fallback to employee code if no email
+	return event.EmployeeCode
+}
+
+func formatEmailAsName(email string) string {
+	// Extract name part from email (before @)
+	// john.smith@company.com -> john.smith
+	parts := strings.Split(email, "@")
+	if len(parts) == 0 {
+		return email
+	}
+
+	namePart := parts[0]
+
+	// Convert dots and underscores to spaces and capitalize
+	// john.smith -> John Smith
+	// john_smith -> John Smith
+	namePart = strings.ReplaceAll(namePart, ".", " ")
+	namePart = strings.ReplaceAll(namePart, "_", " ")
+
+	// Capitalize each word
+	words := strings.Fields(namePart)
+	for i, word := range words {
+		if len(word) > 0 {
+			words[i] = strings.ToUpper(word[:1]) + strings.ToLower(word[1:])
+		}
+	}
+
+	return strings.Join(words, " ")
 }
 
 func formatParticipantNames(participants []LunchParticipant) string {
@@ -1009,17 +1061,177 @@ func formatParticipantNames(participants []LunchParticipant) string {
 	return strings.Join(nameList, "\n")
 }
 
+func getTimezone() *time.Location {
+	location, err := time.LoadLocation("Asia/Singapore")
+	if err != nil {
+		return time.UTC
+	}
+	return location
+}
+
+func getTodayLunchStatus(cheerMessage ...string) string {
+	lunchMutex.RLock()
+	defer lunchMutex.RUnlock()
+
+	today := time.Now().In(getTimezone()).Format("2006-01-02")
+	accepted, existsAccepted := dailyLunchResponses[today]
+	declined, existsDeclined := dailyLunchDeclined[today]
+
+	if !existsAccepted {
+		accepted = []LunchParticipant{}
+	}
+	if !existsDeclined {
+		declined = []LunchParticipant{}
+	}
+
+	return formatLunchStatusWithData(cheerMessage, today, accepted, declined)
+}
+
+func formatLunchStatusWithData(cheerMessage []string, today string, accepted []LunchParticipant, declined ...[]LunchParticipant) string {
+	acceptedCount := len(accepted)
+	var declinedList []LunchParticipant
+	if len(declined) > 0 {
+		declinedList = declined[0]
+	}
+
+	// Build the status message parts
+	var parts []string
+
+	// Add cheer message if provided
+	if len(cheerMessage) > 0 && cheerMessage[0] != "" {
+		parts = append(parts, cheerMessage[0])
+	}
+
+	// Add status section
+	if acceptedCount == 0 && len(declinedList) == 0 {
+		statusSection := fmt.Sprintf(`📊 **Today's Status (%s):**
+👥 Total people accepted: **0**
+❌ No one has responded to lunch yet today`, today)
+		parts = append(parts, statusSection)
+	} else {
+		statusSection := fmt.Sprintf(`📊 **Today's Status (%s):**
+👥 Total people accepted: **%d**`, today, acceptedCount)
+
+		if acceptedCount > 0 {
+			statusSection += fmt.Sprintf(`
+✅ Accepted by:
+%s`, formatParticipantNames(accepted))
+		} else {
+			statusSection += `
+❌ No one has accepted lunch yet today`
+		}
+
+		// Always show declined list if there are declined participants
+		if len(declinedList) > 0 {
+			statusSection += fmt.Sprintf(`
+
+❌ Declined by:
+%s`, formatParticipantNames(declinedList))
+		}
+
+		parts = append(parts, statusSection)
+	}
+
+	// Add emoji message if cheer message was provided (indicating this is from button response)
+	if len(cheerMessage) > 0 && cheerMessage[0] != "" {
+		parts = append(parts, getLunchStatusEmoji(acceptedCount))
+	}
+
+	return strings.Join(parts, "\n\n")
+}
+
 func getLunchStatusEmoji(count int) string {
 	switch {
 	case count == 1:
-		return "🍽️ _Am I going to eat alone today? T.T_"
-	case count >= 2 && count <= 4:
-		return "🍽️ _Nice lah, got more people join me le! Let's decide a place to eat!_"
-	case count >= 5 && count <= 8:
-		return "🍽️ _Shiok! This is going to be a fun lunch! Confirm got place le hor?_"
-	case count > 8:
-		return "🍽️ _Waseh! This is going to be a big lunch party! Let's eat something scrumptious!_"
+		return "😢 _Sadge, am I going to eat alone today? T.T_"
+	case count == 2:
+		return "👥 Swee la, got more people join me le! Is it going to be just 2 of us?_ 🤔"
+	case count == 3:
+		return "👫👤 _3 people nia, anyone else wanna make another pair?_ 🙋‍♂️"
+	case count == 4:
+		return "👨‍👩‍👧‍👦 _It will be a shiok lunch with 4 pax! Confirm got place to eat le mah?_ 🎉"
+	case count > 4:
+		return "🎊 _Waseh! This is going to be a big lunch party! Let's eat something scrumptious!_ 🥳🍜"
 	default:
-		return "🍽️ _Let's eat!_"
+		return "🍽️💨 _Today's lunch bo lang kang kang!_ 😅🤷‍♂️"
 	}
+}
+
+// getRandomCheerMessage generates randomized responses for different event types
+func getRandomCheerMessage(eventType, action, displayName string, isSecondButton bool) string {
+	// Add action-specific prefix
+	actionLabel := "[Accepted] "
+	if action == "decline" || action == "skip" {
+		actionLabel = "[Declined] "
+	}
+
+	titlePrefix := actionLabel
+	if isSecondButton {
+		titlePrefix = "<Prata-ed> " + actionLabel
+	}
+
+	var responses []string
+
+	switch eventType {
+	case "lunch":
+		switch action {
+		case "accept":
+			responses = []string{
+				"🍽️ **%s%s ready to makan liao!** Let's go chope table! 🎉",
+				"🥘 **%s%s join the makan gang!** Time to find good food! 😋",
+				"🍜 **%s%s stomach growling already!** Lunch gonna be shiok! 🔥",
+				"🥗 **%s%s confirm hungry lah!** Let's make this meal memorable! 💯",
+				"🍛 **%s%s ready for food adventure!** Jom makan! 🚀",
+				"🍲 **%s%s showing up with empty stomach!** This lunch gonna be power! ⭐",
+				"🥙 **%s%s locked and loaded for makan!** Time to satisfy those cravings! 🎯",
+				"🍱 **%s%s battery low, need food!** Let's discover something sedap! ✨",
+			}
+		case "decline":
+			responses = []string{
+				"😔 **%s%s cannot make it today.** Next time jio you again! 🍽️",
+				"🏠 **%s%s staying in office today.** We miss you at lunch leh! 💤",
+				"📚 **%s%s got other commitments.** Catch you for next makan session! 👋",
+				"☕ **%s%s going solo today.** Also can lah! ☕",
+				"💼 **%s%s too busy with work.** Don't forget to eat ah! 🛋️",
+				"🥪 **%s%s got other food plans.** Hope it's sedap! 😊",
+				"📱 **%s%s got different arrangement.** See you next time! 🤗",
+				"🍕 **%s%s going for something else.** Enjoy your makan! 😄",
+			}
+		}
+	case "bft":
+		switch action {
+		case "going":
+			responses = []string{
+				"💪 **%s%s confirm going lah!** Ready to sweat like siao! 🔥",
+				"🏃‍♂️ **%s%s join the gang already!** Time to chiong ah! 💦",
+				"⚡ **%s%s sibei on today!** BFT here we come liao! 🚀",
+				"🔥 **%s%s damn committed sia!** Fitness mode activated! 💯",
+				"💥 **%s%s ready to hoot!** Let's make those muscles cry! 🏋️‍♂️",
+				"🌟 **%s%s showing face strong strong!** BFT session gonna be shiok! ⭐",
+				"🎯 **%s%s locked and loaded liao!** Time to push until pengsan! 🚀",
+				"🔋 **%s%s battery full full!** Let's burn those calories like mad! 🔥",
+			}
+		case "skip":
+			responses = []string{
+				"😴 **%s%s taking MC today lah.** Sometimes rest is best mah! 🛌",
+				"🏠 **%s%s sitting out this round.** We miss you at BFT leh! 💤",
+				"📚 **%s%s got other things to do.** Next time jio you again! 👋",
+				"☕ **%s%s choose kopi over cardio.** Also can lah! ☕",
+				"🎮 **%s%s want to slack today.** Self-care also important what! 🛋️",
+				"🌙 **%s%s need to recharge battery.** Rest well for next session! 😊",
+				"📱 **%s%s got other plans liao.** Hope to see you next time! 🤗",
+				"🍕 **%s%s choose shiok over sweat.** We understand one! 😄",
+			}
+		}
+	}
+
+	// Fallback if no responses found
+	if len(responses) == 0 {
+		return fmt.Sprintf("**%s%s updated their response!**", titlePrefix, displayName)
+	}
+
+	// Seed random number generator and select response
+	rand.Seed(time.Now().UnixNano())
+	selectedResponse := responses[rand.Intn(len(responses))]
+	return fmt.Sprintf(selectedResponse, titlePrefix, displayName)
 }
