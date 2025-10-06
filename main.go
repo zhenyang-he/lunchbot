@@ -206,6 +206,10 @@ func main() {
 	r.GET("/health", healthHandler)
 	r.HEAD("/health", healthHandler)
 
+	// Root path handler for uptime monitors that hit "/"
+	r.GET("/", healthHandler)
+	r.HEAD("/", healthHandler)
+
 	// Apply signature validation only to SeaTalk webhook endpoints
 	protected := r.Group("/")
 	protected.Use(WithSOPSignatureValidation())
