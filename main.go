@@ -142,7 +142,7 @@ var (
 
 	// Multiple group support
 	lunchGroupIDs = []string{
-		"MDkwNjg0MDMzMzAw", // Main lunch group ODM2NjA0MzI4OTIy
+		"ODM2NjA0MzI4OTIy", // Main lunch group ODM2NjA0MzI4OTIy
 		// "ANOTHER_GROUP_ID",     // Add more groups here
 	}
 
