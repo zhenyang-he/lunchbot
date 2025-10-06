@@ -142,7 +142,7 @@ var (
 
 	// Multiple group support
 	lunchGroupIDs = []string{
-		"ODM2NjA0MzI4OTIy", // Main lunch group ODM2NjA0MzI4OTIy
+		"MDkwNjg0MDMzMzAw", // Main lunch group ODM2NjA0MzI4OTIy
 		// "ANOTHER_GROUP_ID",     // Add more groups here
 	}
 
@@ -156,6 +156,36 @@ var (
 	// Lunch response tracking for interactive buttons - daily tracking instead of per-message
 	dailyLunchButtonResponses = make(map[string]map[string][]string) // date -> employeeCode -> [button_types_pressed]
 	lunchButtonMutex          sync.RWMutex
+
+	// Lunch places for roulette
+	lunchPlaces = []string{
+		"Makan Street",
+		"Citadines",
+		"Best Bites",
+		"Sally's Kitchen",
+		"Diamond Kitchen",
+		"Timbre+",
+		"One North",
+		"Buona Vista",
+		"Alexandra (hawker/ikea/curry chicken)",
+		"NUS",
+		"Mam Mam",
+		"PGP / Hot Hideout",
+		"Putien / Din Tai Fung",
+		"Great Nanyang",
+		"Xi Men Jie",
+		"Itaden",
+		"Toast Box",
+		"Salad Bowl",
+		"Pasta Express",
+		"Yang Guo Fu",
+		"Sunny Korean",
+		"Dabba Street / Stuff'd / Hugabo / Wok Hey",
+		"Xin Wang",
+		"Crave",
+		"Subway",
+		"Burger King",
+	}
 )
 
 func main() {
@@ -521,10 +551,41 @@ func startLunchScheduler() {
 	}
 }
 
+func getRandomLunchPlace() string {
+	rand.Seed(time.Now().UnixNano())
+	return lunchPlaces[rand.Intn(len(lunchPlaces))]
+}
+
+func getDefaultPlaceMessage() string {
+	now := time.Now().In(getTimezone())
+	weekday := now.Weekday()
+
+	switch weekday {
+	case time.Wednesday:
+		return "but don't forget today's default place is *Ghim Moh* 📍"
+	case time.Thursday:
+		return "but don't forget today's default place is *Holland Village* 📍"
+	default:
+		return ""
+	}
+}
+
 func sendLunchInvite() error {
 	today := time.Now().In(getTimezone()).Format("2006-01-02")
 	messageID := fmt.Sprintf("lunch_%d", time.Now().Unix())
 	todayFormatted := time.Now().In(getTimezone()).Format("Monday, 2 January 2006")
+
+	// Select random lunch place
+	randomPlace := getRandomLunchPlace()
+
+	// Get weekday-specific default place message
+	defaultPlaceMsg := getDefaultPlaceMessage()
+
+	// Combine roulette and default place messages
+	lunchMessage := fmt.Sprintf("Who's interested in lunch today at 12:15pm?\nToday's lunch roulette 🎲: *%s*", randomPlace)
+	if defaultPlaceMsg != "" {
+		lunchMessage += "\n" + defaultPlaceMsg
+	}
 
 	// Send to all configured groups
 	for _, groupID := range lunchGroupIDs {
@@ -544,7 +605,7 @@ func sendLunchInvite() error {
 							ElementType: "description",
 							Description: &SOPInteractiveDescription{
 								Format: 1,
-								Text:   "Who's interested in lunch today at 12:15pm?",
+								Text:   lunchMessage,
 							},
 						},
 						{
