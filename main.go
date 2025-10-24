@@ -95,6 +95,7 @@ type SOPMessage struct {
 	Tag                string                 `json:"tag"`
 	Text               *SOPTextMsg            `json:"text,omitempty"`
 	InteractiveMessage *SOPInteractiveMessage `json:"interactive_message,omitempty"`
+	ThreadID           string                 `json:"thread_id,omitempty"`
 }
 
 type SOPInteractiveMessage struct {
@@ -131,7 +132,8 @@ type SOPTextMsg struct {
 }
 
 type SendMessageToUserResp struct {
-	Code int `json:"code"`
+	Code      int    `json:"code"`
+	MessageID string `json:"message_id"`
 }
 
 var (
@@ -139,6 +141,10 @@ var (
 	dailyLunchResponses = make(map[string][]LunchParticipant) // date -> []accepted participants
 	dailyLunchDeclined  = make(map[string][]LunchParticipant) // date -> []declined participants
 	lunchMutex          sync.RWMutex
+
+	// Threading support for lunch invites
+	latestLunchMessageID = make(map[string]string) // groupID -> messageID
+	lunchThreadMutex     sync.RWMutex
 
 	// Multiple group support
 	lunchGroupIDs = []string{
@@ -437,6 +443,46 @@ func SendMessageToGroup(ctx context.Context, message, groupID string) error {
 	return nil
 }
 
+func SendMessageToThread(ctx context.Context, message, groupID, threadID string) error {
+	bodyJson, _ := json.Marshal(SOPSendMessageToGroup{
+		GroupID: groupID,
+		Message: SOPMessage{
+			Tag: "text",
+			Text: &SOPTextMsg{
+				Format:  1, // Rich text format (use 2 for plain text)
+				Content: message,
+			},
+			ThreadID: threadID,
+		},
+	})
+
+	req, err := http.NewRequest("POST", "https://openapi.seatalk.io/messaging/v2/group_chat", bytes.NewBuffer(bodyJson))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("Authorization", "Bearer "+GetAppAccessToken().AccessToken)
+
+	client := &http.Client{}
+	res, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	resp := &SendMessageToUserResp{}
+	if err := json.NewDecoder(res.Body).Decode(resp); err != nil {
+		return err
+	}
+
+	if resp.Code != 0 {
+		return fmt.Errorf("failed to send thread message, response code: %v", resp.Code)
+	}
+
+	return nil
+}
+
 func handleMessageCommand(ctx *gin.Context, reqSOP SOPEventCallbackReq, isPrivate bool) {
 	message := reqSOP.Event.Message.Text.Content
 	if message == "" {
@@ -663,6 +709,13 @@ func sendLunchInvite() error {
 		if resp.Code != 0 {
 			log.Printf("ERROR: Failed to send lunch invite to group %s, response code: %v", groupID, resp.Code)
 			continue
+		}
+
+		// Store the message ID for threading
+		if resp.MessageID != "" {
+			lunchThreadMutex.Lock()
+			latestLunchMessageID[groupID] = resp.MessageID
+			lunchThreadMutex.Unlock()
 		}
 
 		log.Printf("INFO: Lunch invite sent successfully to group %s", groupID)
@@ -979,10 +1032,27 @@ func handleLunchJoin(ctx *gin.Context, event Event, groupID string, isSecondButt
 	cheerMessage := getRandomCheerMessage("lunch", "accept", displayName, isSecondButton)
 	confirmMsg := formatLunchStatusWithData([]string{cheerMessage}, today, dailyLunchResponses[today], dailyLunchDeclined[today])
 
-	if err := SendMessageToGroup(ctx, confirmMsg, groupID); err != nil {
-		log.Printf("ERROR: Failed to send lunch join confirmation: %v", err)
+	// Try to send as thread reply first, fallback to group message if no thread
+	lunchThreadMutex.RLock()
+	threadID := latestLunchMessageID[groupID]
+	lunchThreadMutex.RUnlock()
+
+	if threadID != "" {
+		if err := SendMessageToThread(ctx, confirmMsg, groupID, threadID); err != nil {
+			log.Printf("ERROR: Failed to send lunch join confirmation to thread: %v", err)
+			// Fallback to group message
+			if err := SendMessageToGroup(ctx, confirmMsg, groupID); err != nil {
+				log.Printf("ERROR: Failed to send lunch join confirmation fallback: %v", err)
+			}
+		} else {
+			log.Printf("INFO: %s (%s) joined lunch for %s. Total accepted: %d (sent as thread reply)", displayName, employeeCode, today, len(dailyLunchResponses[today]))
+		}
 	} else {
-		log.Printf("INFO: %s (%s) joined lunch for %s. Total accepted: %d", displayName, employeeCode, today, len(dailyLunchResponses[today]))
+		if err := SendMessageToGroup(ctx, confirmMsg, groupID); err != nil {
+			log.Printf("ERROR: Failed to send lunch join confirmation: %v", err)
+		} else {
+			log.Printf("INFO: %s (%s) joined lunch for %s. Total accepted: %d", displayName, employeeCode, today, len(dailyLunchResponses[today]))
+		}
 	}
 }
 
@@ -1032,10 +1102,27 @@ func handleLunchSkip(ctx *gin.Context, event Event, groupID string, isSecondButt
 	cheerMessage := getRandomCheerMessage("lunch", "decline", displayName, isSecondButton)
 	skipMsg := formatLunchStatusWithData([]string{cheerMessage}, today, dailyLunchResponses[today], dailyLunchDeclined[today])
 
-	if err := SendMessageToGroup(ctx, skipMsg, groupID); err != nil {
-		log.Printf("ERROR: Failed to send lunch skip confirmation: %v", err)
+	// Try to send as thread reply first, fallback to group message if no thread
+	lunchThreadMutex.RLock()
+	threadID := latestLunchMessageID[groupID]
+	lunchThreadMutex.RUnlock()
+
+	if threadID != "" {
+		if err := SendMessageToThread(ctx, skipMsg, groupID, threadID); err != nil {
+			log.Printf("ERROR: Failed to send lunch skip confirmation to thread: %v", err)
+			// Fallback to group message
+			if err := SendMessageToGroup(ctx, skipMsg, groupID); err != nil {
+				log.Printf("ERROR: Failed to send lunch skip confirmation fallback: %v", err)
+			}
+		} else {
+			log.Printf("INFO: %s (%s) declined lunch for %s. Total accepted: %d, Total declined: %d (sent as thread reply)", displayName, employeeCode, today, len(dailyLunchResponses[today]), len(dailyLunchDeclined[today]))
+		}
 	} else {
-		log.Printf("INFO: %s (%s) declined lunch for %s. Total accepted: %d, Total declined: %d", displayName, employeeCode, today, len(dailyLunchResponses[today]), len(dailyLunchDeclined[today]))
+		if err := SendMessageToGroup(ctx, skipMsg, groupID); err != nil {
+			log.Printf("ERROR: Failed to send lunch skip confirmation: %v", err)
+		} else {
+			log.Printf("INFO: %s (%s) declined lunch for %s. Total accepted: %d, Total declined: %d", displayName, employeeCode, today, len(dailyLunchResponses[today]), len(dailyLunchDeclined[today]))
+		}
 	}
 }
 
